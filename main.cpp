@@ -1,50 +1,129 @@
 #include <iostream>
 #include <stdlib.h>
 #include "BitmapRawConverter.h"
+#include <tbb/tick_count.h>
+#include <tbb/task_group.h>
+using namespace std;
+using namespace tbb;
 
 #define __ARG_NUM__				6
 #define FILTER_SIZE				3
+#define OFFSET					FILTER_SIZE / 2
 #define THRESHOLD				128
+#define CUTOFF					128
+#define NEIGHBOUR_DEPTH         1
 
 using namespace std;
 
 // Prewitt operators
+//int filterHor[FILTER_SIZE * FILTER_SIZE] = { 1, 1, 0, -1, -1, 1, 1, 0, -1, -1, 1, 1, 0, -1, -1, 1, 1, 0, -1, -1, 1, 1, 0, -1, -1 };
+//int filterVer[FILTER_SIZE * FILTER_SIZE] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 int filterHor[FILTER_SIZE * FILTER_SIZE] = {-1, 0, 1, -1, 0, 1, -1, 0, 1};
 int filterVer[FILTER_SIZE * FILTER_SIZE] = {-1, -1, -1, 0, 0, 0, 1, 1, 1};
+//int filterHor[FILTER_SIZE * FILTER_SIZE] = { 1, 1, 1, 0, -1, -1, -1, 1, 1, 1, 0, -1, -1, -1, 1, 1, 1, 0, -1, -1, -1, 1, 1, 1, 0, -1, -1, -1 , 1, 1, 1, 0, -1, -1, -1 , 1, 1, 1, 0, -1, -1, -1 , 1, 1, 1, 0, -1, -1, -1 };
+//int filterVer[FILTER_SIZE * FILTER_SIZE] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 , 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 
 /**
 * @brief Serial version of edge detection algorithm implementation using Prewitt operator
 * @param inBuffer buffer of input image
 * @param outBuffer buffer of output image
+* @param rowStart index of starting row
+* @param rowEnd index of ending row
+* @param colStart index of starting column
+* @param colEnd index of ending column
 * @param width image width
-* @param height image height
 */
-void filter_serial_prewitt(int *inBuffer, int *outBuffer, int width, int height)  //TODO obrisati
-{
+void filter_serial_prewitt(int* inBuffer, int* outBuffer, int rowStart, int rowEnd, int colStart, int colEnd, int width) {
+	for (int i = rowStart; i < rowEnd; i++) {
+		for (int j = colStart; j < colEnd; j++) {
+			int x_value = 0;
+			int y_value = 0;
+			int value = 0;
+			for (int k = 0; k < FILTER_SIZE; k++) {
+				for (int l = 0; l < FILTER_SIZE; l++) {
+					x_value += inBuffer[(j - OFFSET + l) + (i - OFFSET + k) * width] * filterHor[l + k * FILTER_SIZE];
+					y_value += inBuffer[(j - OFFSET + l) + (i - OFFSET + k) * width] * filterVer[l + k * FILTER_SIZE];
+				}
+			}
+			value = abs(x_value) + abs(y_value);
+			outBuffer[j+i*width] = (value < THRESHOLD) ? 0 : 255;
+		}
+	}
 }
-
-
 /**
 * @brief Parallel version of edge detection algorithm implementation using Prewitt operator
-* 
 * @param inBuffer buffer of input image
 * @param outBuffer buffer of output image
+* @param rowStart index of starting row
+* @param rowEnd index of ending row
+* @param colStart index of starting column
+* @param colEnd index of ending column
 * @param width image width
-* @param height image height
+*
 */
-void filter_parallel_prewitt(int *inBuffer, int *outBuffer, int width, int height)
+void filter_parallel_prewitt(int *inBuffer, int *outBuffer, int rowStart, int rowEnd, int colStart, int colEnd, int width)
 {
+	if (rowEnd - rowStart <= CUTOFF) {
+		filter_serial_prewitt(inBuffer, outBuffer, rowStart, rowEnd, colStart, colEnd, width);
+	}
+	else {
+		task_group g;
+		g.run([&] {filter_parallel_prewitt(inBuffer, outBuffer, rowStart, (rowStart+ rowEnd) / 2, colStart, (colStart+colEnd) / 2, width); });
+		g.run([&] {filter_parallel_prewitt(inBuffer, outBuffer, rowStart, (rowStart + rowEnd) / 2, (colStart + colEnd) / 2, colEnd, width); });
+		g.run([&] {filter_parallel_prewitt(inBuffer, outBuffer, (rowStart + rowEnd) / 2, rowEnd, colStart, (colStart + colEnd) / 2, width); });
+		g.run([&] {filter_parallel_prewitt(inBuffer, outBuffer, (rowStart + rowEnd) / 2, rowEnd, (colStart + colEnd) / 2, colEnd, width); });
+		g.wait();
+	}
+}
+
+/**
+* @brief Function for converting input image's pixels to BW 
+* @param inBuffer buffer of input image
+* @param rowStart index of starting row
+* @param rowEnd index of ending row
+* @param colStart index of starting column
+* @param colEnd index of ending column
+* @param width image width
+*
+*/
+void prepare_for_edge_detection(int* inBuffer, int rowStart, int rowEnd, int colStart, int colEnd, int width) {
+	for (int i = rowStart; i < rowEnd; i++) {
+		for (int j = colStart; j < colEnd; j++) {
+			int value = inBuffer[j + i * width];
+			inBuffer[j + i * width] = (value < THRESHOLD) ? 0 : 1;
+		}
+	}
 }
 
 /**
 * @brief Serial version of edge detection algorithm
 * @param inBuffer buffer of input image
 * @param outBuffer buffer of output image
+* @param rowStart index of starting row
+* @param rowEnd index of ending row
+* @param colStart index of starting column
+* @param colEnd index of ending column
 * @param width image width
-* @param height image height
 */
-void filter_serial_edge_detection(int *inBuffer, int *outBuffer, int width, int height)	//TODO obrisati
+
+void filter_serial_edge_detection(int* inBuffer, int* outBuffer, int rowStart, int rowEnd, int colStart, int colEnd, int width)
 {
+	for (int i = rowStart; i < rowEnd; i++) {
+		for (int j = colStart; j < colEnd; j++) {
+			int p_value = 0;
+			int o_value = 1;
+			for (int k = 0; k < 2*NEIGHBOUR_DEPTH+1; k++) {
+				for (int l = 0; l < 2*NEIGHBOUR_DEPTH+1; l++) {
+					if ((j - NEIGHBOUR_DEPTH + l) == j && (i - NEIGHBOUR_DEPTH + k) == i) continue;
+					int pixel_value = (inBuffer[(j - NEIGHBOUR_DEPTH + l) + (i - NEIGHBOUR_DEPTH + k) * width]);
+					p_value = p_value || pixel_value;
+					o_value = o_value && pixel_value;
+				}
+			}
+			int value = abs(p_value - o_value);
+			outBuffer[j + i * width] = value * 255;
+		}
+	}
 }
 
 /**
@@ -52,12 +131,27 @@ void filter_serial_edge_detection(int *inBuffer, int *outBuffer, int width, int 
 * 
 * @param inBuffer buffer of input image
 * @param outBuffer buffer of output image
+* @param rowStart index of starting row
+* @param rowEnd index of ending row
+* @param colStart index of starting column
+* @param colEnd index of ending column
 * @param width image width
-* @param height image height
 */
-void filter_parallel_edge_detection(int *inBuffer, int *outBuffer, int width, int height)
+void filter_parallel_edge_detection(int* inBuffer, int* outBuffer, int rowStart, int rowEnd, int colStart, int colEnd, int width)
 {
+	if (rowEnd - rowStart <= CUTOFF) {
+		filter_serial_edge_detection(inBuffer, outBuffer, rowStart, rowEnd, colStart, colEnd, width);
+	}
+	else {
+		task_group g;
+		g.run([&] {filter_parallel_edge_detection(inBuffer, outBuffer, rowStart, (rowStart + rowEnd) / 2, colStart, (colStart + colEnd) / 2, width); });
+		g.run([&] {filter_parallel_edge_detection(inBuffer, outBuffer, rowStart, (rowStart + rowEnd) / 2, (colStart + colEnd) / 2, colEnd, width); });
+		g.run([&] {filter_parallel_edge_detection(inBuffer, outBuffer, (rowStart + rowEnd) / 2, rowEnd, colStart, (colStart + colEnd) / 2, width); });
+		g.run([&] {filter_parallel_edge_detection(inBuffer, outBuffer, (rowStart + rowEnd) / 2, rowEnd, (colStart + colEnd) / 2, colEnd, width); });
+		g.wait();
+	}
 }
+
 
 /**
 * @brief Function for running test.
@@ -73,34 +167,33 @@ void filter_parallel_edge_detection(int *inBuffer, int *outBuffer, int width, in
 
 void run_test_nr(int testNr, BitmapRawConverter* ioFile, char* outFileName, int* outBuffer, unsigned int width, unsigned int height)
 {
-
-	// TODO: start measure
-	
-
+	if (testNr == 3 || testNr == 4)
+		prepare_for_edge_detection(ioFile->getBuffer(), 0, height, 0, width, width);
+	tick_count startTime = tick_count::now();
 	switch (testNr)
 	{
 		case 1:
 			cout << "Running serial version of edge detection using Prewitt operator" << endl;
-			filter_serial_prewitt(ioFile->getBuffer(), outBuffer, width, height);
+			filter_serial_prewitt(ioFile->getBuffer(), outBuffer, OFFSET, height - OFFSET, OFFSET, width - OFFSET, width);
 			break;
 		case 2:
 			cout << "Running parallel version of edge detection using Prewitt operator" << endl;
-			filter_parallel_prewitt(ioFile->getBuffer(), outBuffer, width, height);
+			filter_parallel_prewitt(ioFile->getBuffer(), outBuffer, OFFSET, height - OFFSET, OFFSET, width - OFFSET, width);
 			break;
 		case 3:
 			cout << "Running serial version of edge detection" << endl;
-			filter_serial_edge_detection(ioFile->getBuffer(), outBuffer, width, height);
+			filter_serial_edge_detection(ioFile->getBuffer(), outBuffer, OFFSET, height - OFFSET, OFFSET, width - OFFSET, width);
 			break;
 		case 4:
 			cout << "Running parallel version of edge detection" << endl;
-			filter_parallel_edge_detection(ioFile->getBuffer(), outBuffer, width, height);
+			filter_parallel_edge_detection(ioFile->getBuffer(), outBuffer, OFFSET, height - OFFSET, OFFSET, width - OFFSET, width);
 			break;
 		default:
 			cout << "ERROR: invalid test case, must be 1, 2, 3 or 4!";
 			break;
 	}
-	// TODO: end measure and display time
-
+	tick_count endTime = tick_count::now();
+	cout << "Time: " << (endTime - startTime).seconds() << "ms." << endl;
 	ioFile->setBuffer(outBuffer);
 	ioFile->pixelsToBitmap(outFileName);
 }
